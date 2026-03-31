@@ -221,24 +221,38 @@ class ZKLib
         $chk = $this->calculateChecksum($buf);
         $buf = pack('vvvv', $command, $chk, $this->sessionId, $this->replyId) . $data;
 
-        fwrite($this->socket, $buf);
+        // TCP ZK protokolü: paketten önce 4 byte boş prefix gönderilmeli
+        fwrite($this->socket, "\x00\x00\x00\x00" . $buf);
 
         $response = $this->receivePacket();
         return $response !== false ? $response : '';
     }
 
-    /** Soket üzerinden paket okur (8 byte header + payload). */
+    /**
+     * Soket üzerinden paket okur.
+     * TCP ZK protokolü: [4-byte prefix/size] [8-byte ZK header] [payload]
+     */
     private function receivePacket(): string|false
     {
+        // TCP'de her yanıt başında 4-byte prefix (total packet size) gelir
+        $prefix = $this->read(4);
+        if (strlen($prefix) < 4) {
+            return false;
+        }
+
+        // 8-byte ZK header: CMD(2) + CHK(2) + SESSION(2) + REPLY(2)
         $header = $this->read(8);
         if (strlen($header) < 8) {
             return false;
         }
-        $size = unpack('V', substr($header, 4, 4))[1] ?? 0;
-        if ($size > 0) {
-            return $header . $this->read($size);
-        }
-        return $header;
+
+        // Prefix'teki boyuttan data miktarını hesapla
+        $totalSize = unpack('V', $prefix)[1] ?? 0;
+        $dataSize  = $totalSize > 8 ? $totalSize - 8 : 0;
+
+        $payload = $dataSize > 0 ? $this->read($dataSize) : '';
+
+        return $header . $payload;
     }
 
     /** Soketten belirli uzunlukta veri okur. */
