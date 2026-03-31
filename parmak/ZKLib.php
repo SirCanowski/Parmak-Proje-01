@@ -221,9 +221,8 @@ class ZKLib
         $chk = $this->calculateChecksum($buf);
         $buf = pack('vvvv', $command, $chk, $this->sessionId, $this->replyId) . $data;
 
-        // TCP ZK protokolü: magic(0x5050, 0x827d) + 4-byte payload length
-        $prefix = pack('vvV', 0x5050, 0x827d, strlen($buf));
-        fwrite($this->socket, $prefix . $buf);
+        // TCP ZK protokolü: magic(50 50 82 7D) + 4-byte LE payload length
+        fwrite($this->socket, "\x50\x50\x82\x7d" . pack('V', strlen($buf)) . $buf);
 
         $response = $this->receivePacket();
         return $response !== false ? $response : '';
