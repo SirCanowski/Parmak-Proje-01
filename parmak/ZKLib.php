@@ -221,8 +221,9 @@ class ZKLib
         $chk = $this->calculateChecksum($buf);
         $buf = pack('vvvv', $command, $chk, $this->sessionId, $this->replyId) . $data;
 
-        // TCP ZK protokolü: paketten önce 4 byte boş prefix gönderilmeli
-        fwrite($this->socket, "\x00\x00\x00\x00" . $buf);
+        // TCP ZK protokolü: magic(0x5050, 0x827d) + 4-byte payload length
+        $prefix = pack('vvV', 0x5050, 0x827d, strlen($buf));
+        fwrite($this->socket, $prefix . $buf);
 
         $response = $this->receivePacket();
         return $response !== false ? $response : '';
@@ -230,29 +231,22 @@ class ZKLib
 
     /**
      * Soket üzerinden paket okur.
-     * TCP ZK protokolü: [4-byte prefix/size] [8-byte ZK header] [payload]
+     * TCP ZK protokolü: [4-byte magic: 50 50 7d 82] [4-byte LE ZK-packet-size] [ZK packet]
      */
     private function receivePacket(): string|false
     {
-        // TCP'de her yanıt başında 4-byte prefix (total packet size) gelir
-        $prefix = $this->read(4);
-        if (strlen($prefix) < 4) {
+        // 8-byte TCP üst başlık: magic(4) + ZK paket boyutu(4)
+        $tcpHeader = $this->read(8);
+        if (strlen($tcpHeader) < 8) {
             return false;
         }
 
-        // 8-byte ZK header: CMD(2) + CHK(2) + SESSION(2) + REPLY(2)
-        $header = $this->read(8);
-        if (strlen($header) < 8) {
-            return false;
+        $zkLen = unpack('V', substr($tcpHeader, 4, 4))[1] ?? 0;
+        if ($zkLen === 0) {
+            return '';
         }
 
-        // Prefix'teki boyuttan data miktarını hesapla
-        $totalSize = unpack('V', $prefix)[1] ?? 0;
-        $dataSize  = $totalSize > 8 ? $totalSize - 8 : 0;
-
-        $payload = $dataSize > 0 ? $this->read($dataSize) : '';
-
-        return $header . $payload;
+        return $this->read($zkLen);
     }
 
     /** Soketten belirli uzunlukta veri okur. */
