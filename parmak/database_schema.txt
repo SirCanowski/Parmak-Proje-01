@@ -1,0 +1,167 @@
+================================================================================
+  ZKTeco TFace100 – MSSQL Veritabanı Şeması
+  Veritabanı: ZKTecoDb
+  Oluşturma Tarihi: 2026-03-31
+================================================================================
+
+Bu dosyayı SQL Server Management Studio (SSMS) veya sqlcmd ile çalıştırın.
+
+--------------------------------------------------------------------------------
+-- 1. Veritabanını oluştur (zaten varsa atla)
+--------------------------------------------------------------------------------
+
+IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'ZKTecoDb')
+BEGIN
+    CREATE DATABASE [ZKTecoDb]
+        COLLATE Turkish_CI_AS;
+END
+GO
+
+USE [ZKTecoDb];
+GO
+
+--------------------------------------------------------------------------------
+-- 2. Kullanıcılar tablosu
+--    Cihazdaki her kullanıcıya karşılık gelir.
+--------------------------------------------------------------------------------
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.tables
+    WHERE object_id = OBJECT_ID(N'dbo.ZK_Users')
+)
+BEGIN
+    CREATE TABLE dbo.ZK_Users (
+        ID          INT             NOT NULL IDENTITY(1,1),
+        UserID      NVARCHAR(9)     NOT NULL,   -- Cihaz içindeki alfanümerik kullanıcı kodu
+        UID         INT             NOT NULL,   -- Dahili sayısal UID (cihazın kendi iç ID'si)
+        [Name]      NVARCHAR(24)    NOT NULL DEFAULT '',
+        Privilege   TINYINT         NOT NULL DEFAULT 0,
+                                               -- 0: Normal, 1: Yönetici, 2: Kayıt yöneticisi, 14: Super admin
+        CardNum     NVARCHAR(10)    NOT NULL DEFAULT '',
+        CreatedAt   DATETIME2       NOT NULL DEFAULT GETDATE(),
+        UpdatedAt   DATETIME2       NOT NULL DEFAULT GETDATE(),
+
+        CONSTRAINT PK_ZK_Users         PRIMARY KEY CLUSTERED (ID),
+        CONSTRAINT UQ_ZK_Users_UserID  UNIQUE (UserID),
+        CONSTRAINT UQ_ZK_Users_UID     UNIQUE (UID)
+    );
+
+    CREATE NONCLUSTERED INDEX IX_ZK_Users_Name
+        ON dbo.ZK_Users ([Name]);
+END
+GO
+
+--------------------------------------------------------------------------------
+-- 3. Parmak izi şablonları tablosu
+--    Her kullanıcının en fazla 10 parmak izi olabilir (FingerID: 0–9).
+--------------------------------------------------------------------------------
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.tables
+    WHERE object_id = OBJECT_ID(N'dbo.ZK_Fingerprints')
+)
+BEGIN
+    CREATE TABLE dbo.ZK_Fingerprints (
+        ID          INT             NOT NULL IDENTITY(1,1),
+        UID         INT             NOT NULL,   -- ZK_Users.UID ile eşleşir
+        FingerID    TINYINT         NOT NULL,   -- 0–9 (hangi parmak)
+        Template    NVARCHAR(MAX)   NOT NULL,   -- Hex kodlanmış şablon verisi
+        Flag        TINYINT         NOT NULL DEFAULT 0,
+                                               -- 0: Geçersiz, 1: Geçerli, 3: Çift şablon
+        CreatedAt   DATETIME2       NOT NULL DEFAULT GETDATE(),
+        UpdatedAt   DATETIME2       NOT NULL DEFAULT GETDATE(),
+
+        CONSTRAINT PK_ZK_Fingerprints PRIMARY KEY CLUSTERED (ID),
+        CONSTRAINT UQ_ZK_Fingerprints_UID_FingerID UNIQUE (UID, FingerID),
+        CONSTRAINT FK_ZK_Fingerprints_Users
+            FOREIGN KEY (UID) REFERENCES dbo.ZK_Users (UID)
+            ON UPDATE CASCADE ON DELETE CASCADE
+    );
+
+    CREATE NONCLUSTERED INDEX IX_ZK_Fingerprints_UID
+        ON dbo.ZK_Fingerprints (UID);
+END
+GO
+
+--------------------------------------------------------------------------------
+-- 4. Yoklama (giriş/çıkış) kayıtları tablosu
+--    Cihazda gerçekleşen her okuma işlemi buraya kaydedilir.
+--------------------------------------------------------------------------------
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.tables
+    WHERE object_id = OBJECT_ID(N'dbo.ZK_Attendance')
+)
+BEGIN
+    CREATE TABLE dbo.ZK_Attendance (
+        ID          BIGINT          NOT NULL IDENTITY(1,1),
+        UID         INT             NOT NULL,
+        [Timestamp] DATETIME2       NOT NULL,   -- Cihazın kaydettiği tarih/saat
+        Status      TINYINT         NOT NULL DEFAULT 0,
+                                               -- 0: Giriş, 1: Çıkış, 2: Mola, 3: Mola dönüş, 4: Fazla mesai, 5: Fazla mesai çıkış
+        VerifyType  TINYINT         NOT NULL DEFAULT 0,
+                                               -- 0: Şifre, 1: Parmak izi, 2: Kart, 10: Yüz
+        CreatedAt   DATETIME2       NOT NULL DEFAULT GETDATE(),
+
+        CONSTRAINT PK_ZK_Attendance PRIMARY KEY CLUSTERED (ID),
+        CONSTRAINT UQ_ZK_Attendance_UID_TS_Status
+            UNIQUE (UID, [Timestamp], Status)
+    );
+
+    CREATE NONCLUSTERED INDEX IX_ZK_Attendance_UID
+        ON dbo.ZK_Attendance (UID);
+
+    CREATE NONCLUSTERED INDEX IX_ZK_Attendance_Timestamp
+        ON dbo.ZK_Attendance ([Timestamp] DESC);
+END
+GO
+
+--------------------------------------------------------------------------------
+-- 5. Örnek yardımcı sorgular
+--------------------------------------------------------------------------------
+
+-- Bugünkü giriş/çıkış kayıtları:
+SELECT
+    a.UID,
+    u.[Name],
+    a.[Timestamp],
+    CASE a.Status
+        WHEN 0 THEN 'Giriş'
+        WHEN 1 THEN 'Çıkış'
+        ELSE CAST(a.Status AS NVARCHAR(5))
+    END AS Durum,
+    CASE a.VerifyType
+        WHEN 0  THEN 'Şifre'
+        WHEN 1  THEN 'Parmak İzi'
+        WHEN 2  THEN 'Kart'
+        WHEN 10 THEN 'Yüz'
+        ELSE CAST(a.VerifyType AS NVARCHAR(5))
+    END AS DogrulamaTipi
+FROM dbo.ZK_Attendance a
+LEFT JOIN dbo.ZK_Users u ON u.UID = a.UID
+WHERE CAST(a.[Timestamp] AS DATE) = CAST(GETDATE() AS DATE)
+ORDER BY a.[Timestamp] DESC;
+GO
+
+-- Kullanıcı başına kayıtlı parmak izi sayısı:
+SELECT
+    u.UID,
+    u.[Name],
+    COUNT(f.ID) AS ParmakIziSayisi
+FROM dbo.ZK_Users u
+LEFT JOIN dbo.ZK_Fingerprints f ON f.UID = u.UID
+GROUP BY u.UID, u.[Name]
+ORDER BY u.[Name];
+GO
+
+-- Son 30 gün içinde hiç giriş yapmayan kullanıcılar:
+SELECT u.UID, u.[Name]
+FROM dbo.ZK_Users u
+WHERE u.UID NOT IN (
+    SELECT DISTINCT UID
+    FROM dbo.ZK_Attendance
+    WHERE [Timestamp] >= DATEADD(DAY, -30, GETDATE())
+);
+GO
+
+================================================================================
