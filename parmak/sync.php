@@ -11,7 +11,7 @@
  * Cihaz IP'sini ve portunu aşağıdaki sabitlerde güncelleyin.
  */
 
-define('ZK_IP',      '192.168.1.201'); // Cihazın IP adresi
+define('ZK_IP',      '172.18.51.125'); // Cihazın IP adresi
 define('ZK_PORT',    4370);            // Varsayılan ZK portu
 define('ZK_TIMEOUT', 10);             // Bağlantı zaman aşımı (sn)
 

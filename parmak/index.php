@@ -34,12 +34,19 @@ try {
         h1   { text-align: center; color: #2c3e50; margin-bottom: 30px; }
         h2   { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 6px; }
         .container { max-width: 1200px; margin: 0 auto; }
-        .actions   { text-align: right; margin-bottom: 20px; }
+        .actions   { text-align: right; margin-bottom: 20px; display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
         .btn {
-            display: inline-block; padding: 10px 22px; background: #3498db;
-            color: #fff; text-decoration: none; border-radius: 5px; font-size: 14px;
+            display: inline-block; padding: 10px 22px;
+            color: #fff; text-decoration: none; border-radius: 5px; font-size: 14px; white-space:nowrap;
         }
-        .btn:hover { background: #2980b9; }
+        .btn-green  { background: #3498db; }
+        .btn-green:hover  { background: #2980b9; }
+        .btn-orange { background: #e67e22; }
+        .btn-orange:hover { background: #ca6f1e; }
+        .btn-gray   { background: #7f8c8d; }
+        .btn-gray:hover   { background: #636e72; }
+        .btn-red    { background: #e74c3c; }
+        .btn-red:hover    { background: #c0392b; }
         .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,.1);
                 padding: 20px; margin-bottom: 30px; overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -66,7 +73,10 @@ try {
     <?php else: ?>
 
     <div class="actions">
-        <a class="btn" href="sync.php">🔄 Cihazdan Senkronize Et</a>
+        <a class="btn btn-green"  href="sync.php">🔄 Cihazdan Senkronize Et</a>
+        <a class="btn btn-orange" href="push_receiver.php?secret=degistirin_gizli_anahtar&table=attendance&uid=0&timestamp=<?= urlencode(date('Y-m-d H:i:s')) ?>&status=0&verify=0" target="_blank">📡 Push Alıcısını Test Et</a>
+        <a class="btn btn-gray"   href="database_schema.txt" target="_blank">🗄️ Veritabanı Şeması</a>
+        <a class="btn btn-red"    href="?action=refresh">↺ Sayfayı Yenile</a>
     </div>
 
     <div class="stats">
