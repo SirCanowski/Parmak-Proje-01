@@ -1,7 +1,7 @@
 <?php
 /**
  * ZKLib.php
- * ZKTeco cihazlarıyla TCP/UDP socket üzerinden iletişim kurar.
+ * ZKTeco cihazlarıyla UDP socket üzerinden iletişim kurar.
  * TFace100 dahil ZK protokolü kullanan tüm cihazlarla çalışır.
  *
  * Desteklenen işlemler:
@@ -9,7 +9,6 @@
  *  - Kullanıcı listesini çek
  *  - Parmak izi şablonlarını çek
  *  - Yoklama kayıtlarını çek
- *  - Yeni kullanıcı / parmak izi şablonu gönder
  */
 class ZKLib
 {
@@ -20,25 +19,25 @@ class ZKLib
     private const CMD_DISABLEDEVICE    = 1003;
     private const CMD_ACK_OK           = 2000;
     private const CMD_ACK_ERROR        = 2001;
-    private const CMD_ACK_DATA         = 2002;
     private const CMD_PREPARE_DATA     = 1500;
     private const CMD_DATA             = 1501;
     private const CMD_FREE_DATA        = 1502;
     private const CMD_GET_FDATA        = 11;   // Yoklama kayıtları
     private const CMD_USERTEMP_RRQ     = 9;    // Parmak izi şablonu oku
-    private const CMD_USER_WRQ        = 8;    // Kullanıcı yaz
-    private const CMD_USERTEMP_WRQ    = 10;   // Parmak izi şablonu yaz
     private const CMD_READ_ALL_USER_ID = 5;   // Tüm kullanıcıları oku
+
+    // Maksimum UDP paket boyutu
+    private const MAX_RECV = 16384;
 
     private string $ip;
     private int    $port;
     private int    $timeout;
 
-    /** @var resource|false */
+    /** @var \Socket|false */
     private $socket = false;
 
-    private int $sessionId  = 0;
-    private int $replyId    = 0;
+    private int $sessionId = 0;
+    private int $replyId   = 0;
 
     public function __construct(string $ip, int $port = 4370, int $timeout = 10)
     {
@@ -53,18 +52,26 @@ class ZKLib
 
     public function connect(): bool
     {
-        $this->socket = @fsockopen($this->ip, $this->port, $errno, $errstr, $this->timeout);
-        if (!$this->socket) {
-            throw new RuntimeException("Cihaza bağlanılamadı ({$this->ip}:{$this->port}): $errstr ($errno)");
+        $sock = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        if ($sock === false) {
+            throw new RuntimeException('UDP soketi oluşturulamadı: ' . socket_strerror(socket_last_error()));
         }
-        stream_set_timeout($this->socket, $this->timeout);
 
+        socket_set_option($sock, SOL_SOCKET, SO_RCVTIMEO, ['sec' => $this->timeout, 'usec' => 0]);
+        socket_set_option($sock, SOL_SOCKET, SO_SNDTIMEO, ['sec' => $this->timeout, 'usec' => 0]);
+
+        if (!socket_connect($sock, $this->ip, $this->port)) {
+            socket_close($sock);
+            throw new RuntimeException("Cihaza bağlanılamadı ({$this->ip}:{$this->port}): " . socket_strerror(socket_last_error($sock)));
+        }
+
+        $this->socket    = $sock;
         $this->sessionId = 0;
         $this->replyId   = 0;
 
         $response = $this->sendCommand(self::CMD_CONNECT, '');
         if ($this->getResponseCode($response) !== self::CMD_ACK_OK) {
-            fclose($this->socket);
+            socket_close($this->socket);
             $this->socket = false;
             throw new RuntimeException('Cihaz bağlantı isteğini reddetti.');
         }
@@ -75,9 +82,9 @@ class ZKLib
 
     public function disconnect(): void
     {
-        if ($this->socket) {
+        if ($this->socket !== false) {
             $this->sendCommand(self::CMD_EXIT, '');
-            fclose($this->socket);
+            socket_close($this->socket);
             $this->socket = false;
         }
     }
@@ -105,13 +112,13 @@ class ZKLib
         $offset = 4; // İlk 4 byte boyut bilgisi
 
         while ($offset < strlen($data)) {
-            if ($offset + 28 > strlen($data)) {
+            if ($offset + 37 > strlen($data)) {
                 break;
             }
 
             $user = unpack(
                 'vuid/Cprivilege/a8password/a24name/a4card/a9user_id',
-                substr($data, $offset, 28 + 9)
+                substr($data, $offset, 48)
             );
 
             $user['name']     = rtrim($user['name'], "\0");
@@ -139,9 +146,9 @@ class ZKLib
     {
         $templates = [];
         for ($fingerIdx = 0; $fingerIdx < 10; $fingerIdx++) {
-            $payload = pack('vCv', $uid, $fingerIdx, 0);
+            $payload  = pack('vCv', $uid, $fingerIdx, 0);
             $response = $this->sendCommand(self::CMD_USERTEMP_RRQ, $payload);
-            $code = $this->getResponseCode($response);
+            $code     = $this->getResponseCode($response);
 
             if ($code === self::CMD_ACK_OK || $code === self::CMD_PREPARE_DATA) {
                 $tplData = $this->receiveData($response);
@@ -212,7 +219,7 @@ class ZKLib
         return sprintf('%04d-%02d-%02d %02d:%02d:%02d', $year, $month, $day, $hour, $minute, $second);
     }
 
-    /** Komut paketi oluşturup gönderir ve yanıtı döndürür. */
+    /** Komut paketi oluşturup UDP ile gönderir ve yanıtı döndürür. */
     private function sendCommand(int $command, string $data): string
     {
         $this->replyId = ($this->replyId + 1) & 0xFFFF;
@@ -221,47 +228,11 @@ class ZKLib
         $chk = $this->calculateChecksum($buf);
         $buf = pack('vvvv', $command, $chk, $this->sessionId, $this->replyId) . $data;
 
-        // TCP ZK protokolü: magic(50 50 82 7D) + 4-byte LE payload length
-        fwrite($this->socket, "\x50\x50\x82\x7d" . pack('V', strlen($buf)) . $buf);
+        socket_send($this->socket, $buf, strlen($buf), 0);
 
-        $response = $this->receivePacket();
-        return $response !== false ? $response : '';
-    }
-
-    /**
-     * Soket üzerinden paket okur.
-     * TCP ZK protokolü: [4-byte magic: 50 50 7d 82] [4-byte LE ZK-packet-size] [ZK packet]
-     */
-    private function receivePacket(): string|false
-    {
-        // 8-byte TCP üst başlık: magic(4) + ZK paket boyutu(4)
-        $tcpHeader = $this->read(8);
-        if (strlen($tcpHeader) < 8) {
-            return false;
-        }
-
-        $zkLen = unpack('V', substr($tcpHeader, 4, 4))[1] ?? 0;
-        if ($zkLen === 0) {
-            return '';
-        }
-
-        return $this->read($zkLen);
-    }
-
-    /** Soketten belirli uzunlukta veri okur. */
-    private function read(int $length): string
-    {
-        $buf = '';
-        $remaining = $length;
-        while ($remaining > 0 && !feof($this->socket)) {
-            $chunk = fread($this->socket, $remaining);
-            if ($chunk === false || $chunk === '') {
-                break;
-            }
-            $buf      .= $chunk;
-            $remaining -= strlen($chunk);
-        }
-        return $buf;
+        $response = '';
+        @socket_recv($this->socket, $response, self::MAX_RECV, 0);
+        return $response ?? '';
     }
 
     /** Yanıt paketinden komut kodunu döndürür. */
@@ -290,8 +261,8 @@ class ZKLib
             return $this->receiveData($response);
         }
 
-        // Küçük yanıt
-        return substr($response, 8);
+        // Küçük yanıt: 8-byte ZK başlığını atla
+        return strlen($response) > 8 ? substr($response, 8) : false;
     }
 
     /**
@@ -303,12 +274,14 @@ class ZKLib
         if (strlen($prepareResponse) < 12) {
             return false;
         }
+
         $size   = unpack('V', substr($prepareResponse, 8, 4))[1];
         $buffer = '';
 
         while (strlen($buffer) < $size) {
-            $packet = $this->receivePacket();
-            if ($packet === false) {
+            $packet = '';
+            $bytes  = @socket_recv($this->socket, $packet, self::MAX_RECV, 0);
+            if ($bytes === false || $bytes === 0 || $packet === '') {
                 break;
             }
             $code = $this->getResponseCode($packet);
@@ -318,10 +291,9 @@ class ZKLib
             $buffer .= substr($packet, 8);
         }
 
-        // CMD_FREE_DATA gönder
         $this->sendCommand(self::CMD_FREE_DATA, '');
 
-        return $buffer ?: false;
+        return $buffer !== '' ? $buffer : false;
     }
 
     /** ZK checksum hesaplar. */
